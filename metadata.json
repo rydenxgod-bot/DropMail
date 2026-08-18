@@ -1,0 +1,6 @@
+{
+  "name": "Dropmail",
+  "description": "Disposable temporary email client powered by Mail.tm with instant inbox, message viewer, and custom email generator.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
