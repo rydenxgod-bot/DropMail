@@ -36,7 +36,7 @@
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/your-username/dropmail.git
+git clone https://github.com/rydenxgod-bot/DropMail.git
 cd dropmail
 
 # 2. Install dependencies
