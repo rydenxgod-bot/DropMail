@@ -251,7 +251,7 @@ async function handleStartCommand(chatId: number, firstName: string) {
     }
   }
 
-  const address = session?.address || 'inbox' + Math.floor(100000 + Math.random() * 900000) + '@oakon.com';
+  const address = session?.address || 'inbox' + Math.floor(100000 + Math.random() * 900000) + '@sharklasers.com';
 
   const welcomeText = 
 `👋 <b>Hello ${firstName}! Welcome to DropMail</b> 📬
