@@ -5,7 +5,7 @@ import {
   registerAndLoginAccount,
   fetchMessagesForToken,
   fetchMessageDetailForToken,
-} from './mailEngine';
+} from './mailEngine.js';
 
 interface ChatSession {
   chatId: number;
