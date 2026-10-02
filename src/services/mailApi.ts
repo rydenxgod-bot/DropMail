@@ -54,23 +54,12 @@ export function generateRandomPassword(): string {
   return pass;
 }
 
-export async function createAccount(
-  customUsername?: string,
-  domainChoice?: string
-): Promise<AccountCredentials> {
-  const cleanUsername = customUsername
-    ? customUsername.toLowerCase().trim().replace(/[^a-z0-9._-]/g, '')
-    : undefined;
-
-  // 1. Primary: Use atomic /api/mail/create endpoint with server-side retry and fallback
+export async function createAccount(): Promise<AccountCredentials> {
+  // Primary: Call quick-create endpoint for automatic best available domain allocation
   try {
-    const res = await fetch(`${API_BASE}/create`, {
+    const res = await fetch(`${API_BASE}/quick-create`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: cleanUsername,
-        domain: domainChoice,
-      }),
     });
 
     if (res.ok) {
@@ -86,30 +75,30 @@ export async function createAccount(
       }
     }
   } catch (err) {
-    console.warn('Atomic create failed, attempting quick-create fallback:', err);
+    console.warn('Quick-create attempt 1 failed, retrying:', err);
   }
 
-  // 2. Fallback: Try quick-create
+  // Fallback: Call create endpoint
   try {
-    const quickRes = await fetch(`${API_BASE}/quick-create`, {
+    const fallbackRes = await fetch(`${API_BASE}/create`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     });
 
-    if (quickRes.ok) {
-      const quickData = await quickRes.json();
-      if (quickData.address && quickData.token) {
+    if (fallbackRes.ok) {
+      const fallbackData = await fallbackRes.json();
+      if (fallbackData.address && fallbackData.token) {
         return {
-          id: quickData.id,
-          address: quickData.address,
-          password: quickData.password,
-          token: quickData.token,
-          createdAt: quickData.createdAt || new Date().toISOString(),
+          id: fallbackData.id,
+          address: fallbackData.address,
+          password: fallbackData.password,
+          token: fallbackData.token,
+          createdAt: fallbackData.createdAt || new Date().toISOString(),
         };
       }
     }
-  } catch (quickErr) {
-    console.warn('Quick-create fallback failed:', quickErr);
+  } catch (fallbackErr) {
+    console.warn('Create fallback failed:', fallbackErr);
   }
 
   throw new MailApiError('Failed to generate temporary email address. Please try again.');

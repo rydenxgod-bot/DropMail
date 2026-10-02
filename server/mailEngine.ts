@@ -2,27 +2,41 @@
 // Shared between Express API endpoints and DropMail Telegram Bot
 
 export const LIVE_PROVIDERS = [
-  { name: 'mail.gw', baseUrl: 'https://api.mail.gw' },
   { name: 'mail.tm', baseUrl: 'https://api.mail.tm' },
+  { name: 'mail.gw', baseUrl: 'https://api.mail.gw' },
 ];
 
 export const domainProviderMap = new Map<string, string>();
 
 // Seed default known active domains
+domainProviderMap.set('uberip.com', 'https://api.mail.tm');
+domainProviderMap.set('emalupe.com', 'https://api.mail.tm');
 domainProviderMap.set('oakon.com', 'https://api.mail.gw');
 domainProviderMap.set('teihu.com', 'https://api.mail.gw');
 domainProviderMap.set('raleigh-construction.com', 'https://api.mail.gw');
 domainProviderMap.set('pastryofistanbul.com', 'https://api.mail.gw');
 domainProviderMap.set('questtechsystems.com', 'https://api.mail.gw');
-domainProviderMap.set('emalupe.com', 'https://api.mail.tm');
+
+// Health and rate-limit tracking for providers
+const providerStatus = new Map<string, { throttledUntil: number }>();
+
+function isProviderThrottled(baseUrl: string): boolean {
+  const status = providerStatus.get(baseUrl);
+  if (!status) return false;
+  return Date.now() < status.throttledUntil;
+}
+
+function markProviderThrottled(baseUrl: string, durationMs = 3500) {
+  providerStatus.set(baseUrl, { throttledUntil: Date.now() + durationMs });
+}
 
 export function getBaseUrlForDomain(domain?: string): string {
-  if (!domain) return 'https://api.mail.gw';
+  if (!domain) return 'https://api.mail.tm';
   const normalized = domain.toLowerCase().trim();
   if (domainProviderMap.has(normalized)) {
     return domainProviderMap.get(normalized)!;
   }
-  return 'https://api.mail.gw';
+  return 'https://api.mail.tm';
 }
 
 export async function apiFetch(url: string, options: RequestInit = {}, timeoutMs = 8000): Promise<Response> {
@@ -56,33 +70,42 @@ export function generatePassword(): string {
   return pass;
 }
 
-// Fetch live domains from upstream providers
+// Fetch live domains from upstream providers in parallel with fallback
 export async function fetchLiveDomains(): Promise<any[]> {
   const allDomains: any[] = [];
 
-  for (const provider of LIVE_PROVIDERS) {
-    try {
-      const resp = await apiFetch(`${provider.baseUrl}/domains?page=1`, { method: 'GET' }, 6000);
+  const results = await Promise.allSettled(
+    LIVE_PROVIDERS.map(async (provider) => {
+      const resp = await apiFetch(`${provider.baseUrl}/domains?page=1`, { method: 'GET' }, 5000);
       if (resp.ok) {
         const data = await resp.json();
         const list = data['hydra:member'] || [];
+        const validItems: any[] = [];
         for (const item of list) {
           if (item.isActive !== false && item.domain) {
-            domainProviderMap.set(item.domain.toLowerCase(), provider.baseUrl);
-            allDomains.push({
+            const domainLower = item.domain.toLowerCase().trim();
+            domainProviderMap.set(domainLower, provider.baseUrl);
+            validItems.push({
               id: item.id || item['@id'] || item.domain,
               domain: item.domain,
               isActive: true,
               isPrivate: Boolean(item.isPrivate),
               provider: provider.name,
+              baseUrl: provider.baseUrl,
               createdAt: item.createdAt || new Date().toISOString(),
               updatedAt: item.updatedAt || new Date().toISOString(),
             });
           }
         }
+        return validItems;
       }
-    } catch (e: any) {
-      console.warn(`Could not fetch domains from ${provider.name}:`, e.message);
+      return [];
+    })
+  );
+
+  for (const res of results) {
+    if (res.status === 'fulfilled' && Array.isArray(res.value)) {
+      allDomains.push(...res.value);
     }
   }
 
@@ -95,133 +118,170 @@ export async function fetchLiveDomains(): Promise<any[]> {
   }
 
   return [
-    { id: '1', domain: 'oakon.com', isActive: true, isPrivate: false, provider: 'mail.gw' },
-    { id: '2', domain: 'teihu.com', isActive: true, isPrivate: false, provider: 'mail.gw' },
-    { id: '3', domain: 'raleigh-construction.com', isActive: true, isPrivate: false, provider: 'mail.gw' },
-    { id: '4', domain: 'pastryofistanbul.com', isActive: true, isPrivate: false, provider: 'mail.gw' },
-    { id: '5', domain: 'questtechsystems.com', isActive: true, isPrivate: false, provider: 'mail.gw' },
+    { id: '1', domain: 'uberip.com', isActive: true, isPrivate: false, provider: 'mail.tm', baseUrl: 'https://api.mail.tm' },
+    { id: '2', domain: 'oakon.com', isActive: true, isPrivate: false, provider: 'mail.gw', baseUrl: 'https://api.mail.gw' },
+    { id: '3', domain: 'teihu.com', isActive: true, isPrivate: false, provider: 'mail.gw', baseUrl: 'https://api.mail.gw' },
+    { id: '4', domain: 'questtechsystems.com', isActive: true, isPrivate: false, provider: 'mail.gw', baseUrl: 'https://api.mail.gw' },
   ];
 }
 
-// Unified robust account registration & login
+// Unified robust account registration & login with multi-provider failover
 export async function registerAndLoginAccount(requestedAddress?: string, requestedDomain?: string) {
-  // Dynamically pull fresh active domains or fall back to known list
-  let domainCandidates: string[] = [];
-  
-  if (requestedDomain) {
-    domainCandidates.push(requestedDomain);
-  }
-
-  try {
-    const liveList = await fetchLiveDomains();
-    for (const d of liveList) {
-      if (d.domain && !domainCandidates.includes(d.domain)) {
-        domainCandidates.push(d.domain);
-      }
-    }
-  } catch (e) {
-    // Fallback if domain fetch fails
-  }
-
-  const fallbackList = ['emalupe.com', 'oakon.com', 'teihu.com', 'raleigh-construction.com', 'pastryofistanbul.com', 'questtechsystems.com'];
-  for (const f of fallbackList) {
-    if (!domainCandidates.includes(f)) {
-      domainCandidates.push(f);
-    }
-  }
-
   let lastError: any = null;
 
-  for (const domain of domainCandidates) {
-    const baseUrl = getBaseUrlForDomain(domain);
-    let username = '';
-    
-    if (requestedAddress && requestedAddress.includes('@')) {
-      const parts = requestedAddress.split('@');
-      username = parts[0];
-    } else if (requestedAddress) {
-      username = requestedAddress;
-    } else {
-      username = 'inbox' + Math.floor(100000 + Math.random() * 900000);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    let domainObjects: { domain: string; baseUrl: string }[] = [];
+
+    if (requestedDomain) {
+      domainObjects.push({
+        domain: requestedDomain,
+        baseUrl: getBaseUrlForDomain(requestedDomain),
+      });
     }
 
-    username = username.toLowerCase().replace(/[^a-z0-9._-]/g, '');
-    if (!username) username = 'inbox' + Math.floor(100000 + Math.random() * 900000);
-
-    const address = `${username}@${domain}`;
-    const password = generatePassword();
-
     try {
-      // 1. Register
-      const regRes = await apiFetch(`${baseUrl}/accounts`, {
-        method: 'POST',
-        body: JSON.stringify({ address, password }),
-      }, 7000);
+      const liveList = await fetchLiveDomains();
+      for (const d of liveList) {
+        if (d.domain && !domainObjects.some((item) => item.domain.toLowerCase() === d.domain.toLowerCase())) {
+          domainObjects.push({
+            domain: d.domain,
+            baseUrl: d.baseUrl || getBaseUrlForDomain(d.domain),
+          });
+        }
+      }
+    } catch (e) {
+      // Fallback
+    }
 
-      if (regRes.status === 429) {
-        console.warn(`Provider ${baseUrl} rate limited for ${address}, trying next domain...`);
-        lastError = new Error('Provider rate limit, tried next');
-        continue;
+    const hardcodedFallbacks = [
+      { domain: 'uberip.com', baseUrl: 'https://api.mail.tm' },
+      { domain: 'oakon.com', baseUrl: 'https://api.mail.gw' },
+      { domain: 'teihu.com', baseUrl: 'https://api.mail.gw' },
+      { domain: 'questtechsystems.com', baseUrl: 'https://api.mail.gw' },
+    ];
+
+    for (const fb of hardcodedFallbacks) {
+      if (!domainObjects.some((item) => item.domain.toLowerCase() === fb.domain.toLowerCase())) {
+        domainObjects.push(fb);
+      }
+    }
+
+    // Prioritize unthrottled providers
+    domainObjects.sort((a, b) => {
+      const aThrottled = isProviderThrottled(a.baseUrl);
+      const bThrottled = isProviderThrottled(b.baseUrl);
+      if (aThrottled && !bThrottled) return 1;
+      if (!aThrottled && bThrottled) return -1;
+      return 0;
+    });
+
+    for (const domObj of domainObjects) {
+      const domain = domObj.domain;
+      const primaryBaseUrl = domObj.baseUrl;
+      const secondaryBaseUrl = primaryBaseUrl.includes('mail.gw') ? 'https://api.mail.tm' : 'https://api.mail.gw';
+
+      let username = '';
+      if (requestedAddress && requestedAddress.includes('@') && attempt === 1) {
+        username = requestedAddress.split('@')[0];
+      } else {
+        username = 'inbox' + Math.floor(100000 + Math.random() * 900000) + Math.random().toString(36).substring(2, 6);
       }
 
-      if (!regRes.ok) {
-        const errJson = await regRes.json().catch(() => ({}));
-        const msg = errJson['hydra:description'] || errJson.message || `Status ${regRes.status}`;
-        console.warn(`Registration rejected for ${address} (${msg}), trying next...`);
-        lastError = new Error(msg);
-        continue;
-      }
+      username = username.toLowerCase().replace(/[^a-z0-9._-]/g, '');
+      if (!username) username = 'inbox' + Math.floor(100000 + Math.random() * 900000);
 
-      const regData = await regRes.json();
+      const address = `${username}@${domain}`;
+      const password = generatePassword();
 
-      // Short delay for DB synchronization
-      await new Promise((r) => setTimeout(r, 200));
+      const baseUrlsToTry = [primaryBaseUrl, secondaryBaseUrl];
 
-      // 2. Obtain Token
-      const tokenRes = await apiFetch(`${baseUrl}/token`, {
-        method: 'POST',
-        body: JSON.stringify({ address, password }),
-      }, 7000);
-
-      if (!tokenRes.ok) {
-        const altBaseUrl = baseUrl.includes('mail.gw') ? 'https://api.mail.tm' : 'https://api.mail.gw';
-        const altTokenRes = await apiFetch(`${altBaseUrl}/token`, {
-          method: 'POST',
-          body: JSON.stringify({ address, password }),
-        }, 7000).catch(() => null);
-
-        if (altTokenRes && altTokenRes.ok) {
-          const altTokenData = await altTokenRes.json();
-          domainProviderMap.set(domain.toLowerCase(), altBaseUrl);
-          return {
-            id: regData.id || altTokenData.id,
-            address,
-            password,
-            token: altTokenData.token,
-            createdAt: regData.createdAt || new Date().toISOString(),
-          };
+      for (const baseUrl of baseUrlsToTry) {
+        if (isProviderThrottled(baseUrl) && baseUrlsToTry.length > 1) {
+          continue;
         }
 
-        lastError = new Error(`Login failed (${tokenRes.status})`);
-        continue;
+        try {
+          const regRes = await apiFetch(`${baseUrl}/accounts`, {
+            method: 'POST',
+            body: JSON.stringify({ address, password }),
+          }, 7000);
+
+          if (regRes.status === 429) {
+            markProviderThrottled(baseUrl, 3500);
+            console.warn(`Provider ${baseUrl} rate limited (429) for ${address}, failing over...`);
+            lastError = new Error('Provider rate limit, tried next');
+            continue;
+          }
+
+          if (regRes.status >= 500) {
+            markProviderThrottled(baseUrl, 3000);
+            console.warn(`Provider ${baseUrl} server error (${regRes.status}), failing over...`);
+            lastError = new Error(`Provider returned ${regRes.status}`);
+            continue;
+          }
+
+          if (!regRes.ok) {
+            const errJson = await regRes.json().catch(() => ({}));
+            const msg = errJson['hydra:description'] || errJson.message || `Status ${regRes.status}`;
+            console.warn(`Registration rejected for ${address} on ${baseUrl} (${msg}), trying next...`);
+            lastError = new Error(msg);
+            continue;
+          }
+
+          const regData = await regRes.json();
+          await new Promise((r) => setTimeout(r, 150));
+
+          // Obtain JWT Token
+          const tokenRes = await apiFetch(`${baseUrl}/token`, {
+            method: 'POST',
+            body: JSON.stringify({ address, password }),
+          }, 7000);
+
+          if (tokenRes.ok) {
+            const tokenData = await tokenRes.json();
+            domainProviderMap.set(domain.toLowerCase(), baseUrl);
+            return {
+              id: regData.id || tokenData.id,
+              address,
+              password,
+              token: tokenData.token,
+              createdAt: regData.createdAt || new Date().toISOString(),
+            };
+          }
+
+          // Try token on alt base URL
+          const altBaseUrl = baseUrl.includes('mail.gw') ? 'https://api.mail.tm' : 'https://api.mail.gw';
+          const altTokenRes = await apiFetch(`${altBaseUrl}/token`, {
+            method: 'POST',
+            body: JSON.stringify({ address, password }),
+          }, 7000).catch(() => null);
+
+          if (altTokenRes && altTokenRes.ok) {
+            const altTokenData = await altTokenRes.json();
+            domainProviderMap.set(domain.toLowerCase(), altBaseUrl);
+            return {
+              id: regData.id || altTokenData.id,
+              address,
+              password,
+              token: altTokenData.token,
+              createdAt: regData.createdAt || new Date().toISOString(),
+            };
+          }
+
+          lastError = new Error(`Login failed (${tokenRes.status})`);
+        } catch (err: any) {
+          console.warn(`Error trying ${address} on ${baseUrl}:`, err.message);
+          lastError = err;
+        }
       }
+    }
 
-      const tokenData = await tokenRes.json();
-
-      return {
-        id: regData.id || tokenData.id,
-        address,
-        password,
-        token: tokenData.token,
-        createdAt: regData.createdAt || new Date().toISOString(),
-      };
-    } catch (err: any) {
-      console.warn(`Error trying domain ${domain}:`, err.message);
-      lastError = err;
+    if (attempt < 3) {
+      await new Promise((r) => setTimeout(r, 300));
     }
   }
 
-  throw lastError || new Error('Failed to create account across all available domains');
+  throw lastError || new Error('Failed to create account across all available providers and domains');
 }
 
 // Fetch messages for a given JWT token with multi-provider fallback

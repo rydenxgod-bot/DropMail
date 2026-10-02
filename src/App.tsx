@@ -147,7 +147,7 @@ export default function App() {
     }
   };
 
-  const handleGenerateNewAccount = async (customUser?: string, domainChoice?: string) => {
+  const handleGenerateNewAccount = async () => {
     setIsLoadingAccount(true);
     setErrorMessage(null);
     setSelectedMessageId(null);
@@ -156,7 +156,7 @@ export default function App() {
     knownMessageIdsRef.current.clear();
 
     try {
-      const newAcc = await createAccount(customUser, domainChoice);
+      const newAcc = await createAccount();
       setAccount(newAcc);
       localStorage.setItem(STORAGE_ACCOUNT_KEY, JSON.stringify(newAcc));
 
@@ -457,7 +457,6 @@ export default function App() {
       <NewEmailModal
         isOpen={isNewMailModalOpen}
         onClose={() => setIsNewMailModalOpen(false)}
-        domains={domains}
         onGenerate={handleGenerateNewAccount}
         cooldownRemaining={cooldownRemaining}
       />
